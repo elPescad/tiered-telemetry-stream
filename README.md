@@ -1,5 +1,4 @@
 # Tiered-Telemetry-Stream
-# Async Telemetry Broker
 
 An enterprise-grade, high-throughput, asynchronous telemetry ingestion broker built in **Rust** using the **Tokio** runtime and **Axum** framework. This service serves as the core backend infrastructure for the SHPE platform, decoupling high-frequency client-side logging from the transactional database by streaming and batching payloads into **Google Cloud Storage (GCS)**.
 
@@ -84,9 +83,6 @@ To run and test the ingestion pipeline locally without Docker, you will need two
 
 **Terminal 1: Start the Server**
 ```bash
-# Navigate to the backend folder
-cd path/to/your/rust-backend
-
 # Compile and run the server
 cargo run
 ```
