@@ -97,7 +97,7 @@ curl -v http://localhost:8080/ingest \
 ```
 
 ### 2. Local Docker Deployment
-The service is containerized using Docker and is actively deployed to a permanently running Google Cloud Platform (GCP) Compute Engine virtual machine instance.
+The service is containerized using a Debian Linux-based Docker environment to guarantee consistency across builds. It is actively deployed and hosted on a permanently running Google Cloud Platform (GCP) Compute Engine virtual machine instance
 
 To configure the container environment, instantiate a `.env` file within the project root directory:
 ```bash
