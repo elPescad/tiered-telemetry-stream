@@ -1,0 +1,3 @@
+{"topic":"mobile_telemetry","timestamp":1782777752,"payload":"{\"e\":\"se\",\"id\":\"heavy_load_3\",\"t\":300}"}
+{"topic":"mobile_telemetry","timestamp":1782777752,"payload":"{\"e\":\"v\",\"id\":\"heavy_load_4\",\"t\":400}"}
+{"topic":"mobile_telemetry","timestamp":1782777752,"payload":"{\"e\":\"a\",\"id\":\"heavy_load_5\",\"t\":500}"}

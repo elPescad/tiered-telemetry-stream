@@ -78,10 +78,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
      *  */
     tokio::spawn(async move {
         println!("Disk manager task running in background");
+        tokio::fs::create_dir_all("logs").await.unwrap();
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("hot_tier.log")
+            .open("logs/hot_tier.log")
             .await
             .expect("Failed to open hot_tier.log");
 
@@ -104,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
                     let _ = file.sync_all().await;
 
                     //file rotation
-                    if let Ok(meta) = tokio::fs::metadata("hot_tier.log").await {
+                    if let Ok(meta) = tokio::fs::metadata("logs/hot_tier.log").await {
                         //10MB (10KB for now)
                         if meta.len() >= 10 * 1024 * 1024{
                             println!("Log reached threshold. rotating and uploading...");
@@ -117,21 +118,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
 
                             //creates new names in order to store unique values in cloud
                             //name of file to compress
-                            let archive_name = format!("archive_{}.log", timestamp);
+                            let archive_name = format!("logs/archive_{}.log", timestamp);
                             //name of file to upload
                             let cloud_name = format!("segment_{}.log.gz", timestamp);
 
                             //renames files
-                            if let Err(e) = tokio::fs::rename("hot_tier.log", &archive_name).await {
+                            if let Err(e) = tokio::fs::rename("logs/hot_tier.log", &archive_name).await {
                                 eprintln!("Failed to rotate log: {}", e);
                                 continue;
                             }
 
                             //Opens new file to write
+                            tokio::fs::create_dir_all("logs").await.unwrap();
+
                             file = OpenOptions::new()
                                 .create(true)
                                 .append(true)
-                                .open("hot_tier.log")
+                                .open("logs/hot_tier.log")
                                 .await
                                 .expect("Failed to create fresh hot_tier.log");
 
