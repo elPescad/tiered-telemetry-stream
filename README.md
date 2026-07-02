@@ -84,9 +84,6 @@ To run and test the ingestion pipeline locally without Docker, you will need two
 
 **Terminal 1: Start the Server**
 ```bash
-# Navigate to the backend folder
-cd path/to/your/rust-backend
-
 # Compile and run the server
 cargo run
 ```
