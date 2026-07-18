@@ -1,5 +1,7 @@
 # Tiered-Telemetry-Stream
 
+[Source Code](http://github.com/elPescad/tiered-telemetry-stream/blob/main/src/main.rs)
+
 An enterprise-grade, high-throughput, asynchronous telemetry ingestion broker built in **Rust** using the **Tokio** runtime and **Axum** framework. This service serves as the core backend infrastructure for the SHPE platform, decoupling high-frequency client-side logging from the transactional database by streaming and batching payloads into **Google Cloud Storage (GCS)**.
 
 ## Architecture Overview
