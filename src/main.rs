@@ -1,5 +1,4 @@
 use tokio::net::TcpListener;
-use tokio::io::AsyncReadExt;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
@@ -33,15 +32,8 @@ pub struct BrokerMessage {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TelemetryEvent {
-    pub e: String,           // Event type ('v', 'a', 'se')
-    pub id: Option<String>,  // Target ID (optional)
-    pub t: Option<u64>,      // Duration/Value (optional)
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct IngestPayload {
-    pub logs: Vec<TelemetryEvent>, // The array of logs from mobile
+    pub logs: Vec<serde_json::Value>, // The array of logs from mobile
 }
 
 #[derive(Clone, Debug)]
@@ -153,9 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
                         }
                     }
                 }
-                Err(_) => {
-                    continue;
-                }
+                Err(_) => continue,
             }
         }
     });
@@ -246,12 +236,12 @@ async fn compress_and_upload_log(local_filename: &str, bucket_name: &str, object
 //http handler
 //automatically unpacks the JSON array from the React Native app
 async fn ingest_handler(State(tx): State<broadcast::Sender<Message>>, Json(payload): Json<IngestPayload>,) -> StatusCode {
-    println!("Recieved batch of {} events from mobile client", payload.logs.len());
+    println!("Received batch of {} events from mobile client", payload.logs.len());
 
     //loop through the batched logs and forward them to existing disk writer
     for event in payload.logs {
         //convert tiny mobile data into string for storage
-        let payload_str = serde_json::to_string(&event).unwrap_or_default();
+        let payload_str = event.to_string();
 
         //structures log payload for redability for later access
         let broker_msg = BrokerMessage {
@@ -286,7 +276,7 @@ async fn consumer_handler(State(tx): State<broadcast::Sender<Message>> ) -> Sse<
                     yield Ok(Event::default().data(data_str));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                    eprintln!("Consume lagged, missed {} message", missed);
+                    eprintln!("Consumer lagged, missed {} message", missed);
                 }
                 Err(_) => break,
             }
