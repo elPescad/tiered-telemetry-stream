@@ -1,6 +1,6 @@
 use tokio::net::TcpListener;
 use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::broadcast;
 use yup_oauth2::{read_service_account_key, ServiceAccountAuthenticator};
 use reqwest::Client;
@@ -13,7 +13,6 @@ use serde::{Serialize, Deserialize};
 use std::env;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use std::fs::File;
 use axum::{
     routing::post,
     routing::get,
@@ -22,7 +21,6 @@ use axum::{
     extract::State,
     http::StatusCode,
 };
-use std::io::{Read, Write};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BrokerMessage {
@@ -37,27 +35,25 @@ pub struct IngestPayload {
 }
 
 #[derive(Clone, Debug)]
-enum Message
-{
+enum Message {
     Json(BrokerMessage),
 }
+
 //Box acts essentially as a pointer but without the need to manually dereference
 //here main runs asynchronously and returns type () -> good or it returns
 //a dyanmic error type as a pointer Box
 #[tokio::main]
-
-async fn main() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //load .env into file
     dotenv().ok();
 
     println!("Starting cloud tiered broker...");
     //the '?' lets us error check each statement
 
-    //creates channel that can hold 100 unread messages in RAM
+    //creates channel that can hold 10,000 unread messages in RAM
     //tx is transmitter
     //rx is reciever
-    let (tx, _rx) = broadcast::channel::<Message>(100);
+    let (tx, _rx) = broadcast::channel::<Message>(10_000);
     
     let mut disk_rx = tx.subscribe();
 
@@ -71,12 +67,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
     tokio::spawn(async move {
         println!("Disk manager task running in background");
         tokio::fs::create_dir_all("logs").await.unwrap();
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open("logs/hot_tier.log")
             .await
             .expect("Failed to open hot_tier.log");
+
+        // BufWriter batches small disk writes into memory to avoid IOPS bottlenecks
+        let mut writer = BufWriter::new(file);
+        let mut current_file_size = 0;
 
         //wait for messages
         loop {
@@ -86,63 +86,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
                         Message::Json(j) => serde_json::to_vec(j).unwrap(),
                     };
 
-                    //write and sync
-                    if let Err(e) = file.write_all(&data).await {
+                    //write to memory buffer
+                    if let Err(e) = writer.write_all(&data).await {
                         eprintln!("Disk failed to write: {}", e);
                         continue;
                     }
                     //write data
-                    let _ = file.write_all(b"\n").await;
-                    //drop letover bytes in kernel
-                    let _ = file.sync_all().await;
+                    let _ = writer.write_all(b"\n").await;
+                    
+                    // Track written size in RAM instead of hitting disk metadata on every iteration
+                    current_file_size += data.len() + 1;
 
-                    //file rotation
-                    if let Ok(meta) = tokio::fs::metadata("logs/hot_tier.log").await {
-                        //10MB (10KB for now)
-                        if meta.len() >= 10 * 1024 * 1024{
-                            println!("Log reached threshold. rotating and uploading...");
+                    //file rotation (10MB threshold)
+                    if current_file_size >= 10 * 1024 * 1024 {
+                        println!("Log reached threshold. rotating and uploading...");
 
-                            //get time since Unix epoch to get unique file name for every file
-                            let timestamp = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs();
+                        // Flush remaining memory bytes to disk before rotating
+                        let _ = writer.flush().await;
 
-                            //creates new names in order to store unique values in cloud
-                            //name of file to compress
-                            let archive_name = format!("logs/archive_{}.log", timestamp);
-                            //name of file to upload
-                            let cloud_name = format!("segment_{}.log.gz", timestamp);
+                        //get time since Unix epoch to get unique file name for every file
+                        let timestamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
 
-                            //renames files
-                            if let Err(e) = tokio::fs::rename("logs/hot_tier.log", &archive_name).await {
-                                eprintln!("Failed to rotate log: {}", e);
-                                continue;
-                            }
+                        //creates new names in order to store unique values in cloud
+                        //name of file to compress
+                        let archive_name = format!("logs/archive_{}.log", timestamp);
+                        //name of file to upload
+                        let cloud_name = format!("segment_{}.log.gz", timestamp);
 
-                            //Opens new file to write
-                            tokio::fs::create_dir_all("logs").await.unwrap();
-
-                            file = OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open("logs/hot_tier.log")
-                                .await
-                                .expect("Failed to create fresh hot_tier.log");
-
-                            //Gets bucket and key from env file
-                            let bucket = env::var("GCP_BUCKET_NAME").unwrap();
-                            let key = env::var("GCP_KEY_PATH").unwrap();
-
-                            //uploads in the background
-                            tokio::spawn(async move {
-                                match compress_and_upload_log(&archive_name, &bucket, &cloud_name, &key).await {
-                                    Ok(_) => println!("Segment {} securely stored in cloud", cloud_name),
-                                    Err(e) => eprintln!("Upload failed for segment {}: {}", cloud_name, e),
-                                } 
-                            });
-
+                        //renames files
+                        if let Err(e) = tokio::fs::rename("logs/hot_tier.log", &archive_name).await {
+                            eprintln!("Failed to rotate log: {}", e);
+                            continue;
                         }
+
+                        //Opens new file to write
+                        let new_file = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("logs/hot_tier.log")
+                            .await
+                            .expect("Failed to create fresh hot_tier.log");
+
+                        writer = BufWriter::new(new_file);
+                        current_file_size = 0;
+
+                        //Gets bucket and key from env file
+                        let bucket = env::var("GCP_BUCKET_NAME").unwrap_or_default();
+                        let key = env::var("GCP_KEY_PATH").unwrap_or_default();
+
+                        //uploads in the background
+                        tokio::spawn(async move {
+                            match compress_and_upload_log(archive_name.clone(), bucket, cloud_name.clone(), key).await {
+                                Ok(_) => println!("Segment {} securely stored in cloud", cloud_name),
+                                Err(e) => {
+                                    let err_msg = e.to_string();
+                                    eprintln!("Upload failed for segment {}: {}. Purging local archive to prevent disk exhaustion.", cloud_name, err_msg);
+                                    let _ = tokio::fs::remove_file(&archive_name).await;
+                                    let _ = tokio::fs::remove_file(&format!("{}.gz", archive_name)).await;
+                                }
+                            } 
+                        });
                     }
                 }
                 Err(_) => continue,
@@ -158,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
 
     //Define http router and attach your broadcast channel to its state
     let app = Router::new()
-        .route("/ingest", post(ingest_handler))// Post request to push info
+        .route("/ingest", post(ingest_handler)) // Post request to push info
         .route("/stream", get(consumer_handler)) // Get request for reading data
         .with_state(tx_producer);
 
@@ -173,29 +179,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>>
 }
 
 //compresses file and uploads
-async fn compress_and_upload_log(local_filename: &str, bucket_name: &str, object_name: &str, key_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn compress_and_upload_log(local_filename: String, bucket_name: String, object_name: String, key_path: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Compressing {}...", local_filename);
 
     //creates new .gz file
     let compressed_filename = format!("{}.gz", local_filename);
-    //anon block. Acts as sandbox to ensure coder finishes and closes file cleanly
-    {
-        let mut input_file = File::open(local_filename)?;
+    let local_clone = local_filename.clone();
+    let comp_clone = compressed_filename.clone();
+
+    //anon block wrapped in spawn_blocking. Offloads heavy CPU work off Tokio's worker threads
+    tokio::task::spawn_blocking(move || {
+        let mut input_file = std::fs::File::open(&local_clone)?;
         //create new file to store compressed data whose path is the new .gz file name we created
-        let compressed_file = File::create(&compressed_filename)?;
+        let compressed_file = std::fs::File::create(&comp_clone)?;
         let mut encoder = GzEncoder::new(compressed_file, Compression::default());
 
-        //create storage for bytes
-        let mut buffer = Vec::new();
-        input_file.read_to_end(&mut buffer)?;
-        //write stored bytes into new compression file
-        encoder.write_all(&buffer)?;
+        //Stream byte contents directly without allocating massive RAM vectors
+        std::io::copy(&mut input_file, &mut encoder)?;
         encoder.finish()?;
-    }
+        Ok::<(), std::io::Error>(())
+    }).await??;
 
     //Authenticate with Google Cloud using JSON key
     println!("Authenticating with GCP...");
-    let secret = read_service_account_key(key_path).await?;
+    let secret = read_service_account_key(&key_path).await?;
     let auth = ServiceAccountAuthenticator::builder(secret).build().await?;
     let scopes = &["https://www.googleapis.com/auth/devstorage.read_write"];
     let token = auth.token(scopes).await?;
@@ -203,7 +210,10 @@ async fn compress_and_upload_log(local_filename: &str, bucket_name: &str, object
     //Upload compressed file to google cloud bucket
     println!("Uploading {} to Google Cloud...", compressed_filename);
     let file_bytes = tokio::fs::read(&compressed_filename).await?;
-    let client = Client::new();
+    
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
 
     let url = format!(
         "https://storage.googleapis.com/upload/storage/v1/b/{}/o?uploadType=media&name={}",
@@ -223,7 +233,7 @@ async fn compress_and_upload_log(local_filename: &str, bucket_name: &str, object
         println!("Success. File {} safely stored in bucket.", object_name);
 
         //safely wipe local data because google confirmed reciept
-        tokio::fs::remove_file(local_filename).await?;
+        tokio::fs::remove_file(&local_filename).await?;
         tokio::fs::remove_file(&compressed_filename).await?;
         println!("Local files wiped cleanly");
         Ok(())
@@ -235,22 +245,17 @@ async fn compress_and_upload_log(local_filename: &str, bucket_name: &str, object
 
 //http handler
 //automatically unpacks the JSON array from the React Native app
-async fn ingest_handler(State(tx): State<broadcast::Sender<Message>>, Json(payload): Json<IngestPayload>,) -> StatusCode {
-    println!("Received batch of {} events from mobile client", payload.logs.len());
-
+async fn ingest_handler(State(tx): State<broadcast::Sender<Message>>, Json(payload): Json<IngestPayload>) -> StatusCode {
     //loop through the batched logs and forward them to existing disk writer
     for event in payload.logs {
-        //convert tiny mobile data into string for storage
-        let payload_str = event.to_string();
-
-        //structures log payload for redability for later access
+        //convert tiny mobile data into string for storage & structures log payload for readability for later access
         let broker_msg = BrokerMessage {
             topic: "mobile_telemetry".to_string(),
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-            payload: payload_str,
+            payload: event.to_string(),
         };
 
         //send to original broadcast signal
@@ -262,7 +267,7 @@ async fn ingest_handler(State(tx): State<broadcast::Sender<Message>>, Json(paylo
 }
 
 //handler creates a persistent HTTP stream for consumer dashboard
-async fn consumer_handler(State(tx): State<broadcast::Sender<Message>> ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn consumer_handler(State(tx): State<broadcast::Sender<Message>>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     println!("New consumer connected to live stream");
     let mut rx = tx.subscribe();
 
@@ -271,7 +276,7 @@ async fn consumer_handler(State(tx): State<broadcast::Sender<Message>> ) -> Sse<
         loop {
             match rx.recv().await {
                 Ok(Message::Json(json_data)) => {
-                    //Convert the string to struct and push it to HTTP client
+                    //Convert the struct to string and push it to HTTP client
                     let data_str = serde_json::to_string(&json_data).unwrap_or_default();
                     yield Ok(Event::default().data(data_str));
                 }
