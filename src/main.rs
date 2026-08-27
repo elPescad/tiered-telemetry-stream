@@ -230,9 +230,11 @@ async fn compress_and_upload_log(local_filename: String, bucket_name: String, ob
         bucket_name, object_name
     );
 
+    let token_str = token.token().ok_or("Failed to extract valid OAuth token string")?;
+
     let response = client
         .post(&url)
-        .bearer_auth(token.token().unwrap())
+        .bearer_auth(token_str)
         .header("Content-Type", "application/gzip")
         .body(file_bytes)
         .send()
