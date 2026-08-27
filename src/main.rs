@@ -26,7 +26,7 @@ use axum::{
 pub struct BrokerMessage {
     pub topic: String,
     pub timestamp: u64,
-    pub payload: String,
+    pub payload: serde_json::Value,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         //get time since Unix epoch to get unique file name for every file
                         let timestamp = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or(std::time::Duration::ZERO)
                             .as_secs();
 
                         //creates new names in order to store unique values in cloud
@@ -151,7 +151,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         });
                     }
                 }
-                Err(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    eprintln!("Disk manager fell behind broadcast buffer! Missed {} messages.", missed);
+                    // Continue processing subsequent messages
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    println!("All senders dropped. Flushing remaining logs and shutting down disk manager...");
+                    let _ = writer.flush().await;
+                    // Break out of the infinite loop cleanly
+                    break;
+                }
             }
         }
     });
@@ -253,11 +263,10 @@ async fn ingest_handler(State(tx): State<broadcast::Sender<Message>>, Json(paylo
             topic: "mobile_telemetry".to_string(),
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or(std::time::Duration::ZERO)
                 .as_secs(),
-            payload: event.to_string(),
+            payload: event,
         };
-
         //send to original broadcast signal
         let _ = tx.send(Message::Json(broker_msg));
     }
