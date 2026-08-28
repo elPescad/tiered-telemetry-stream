@@ -1,39 +1,43 @@
-use tokio::net::TcpListener;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::sync::broadcast;
-use yup_oauth2::{read_service_account_key, ServiceAccountAuthenticator};
-use reqwest::Client;
-use axum::response::sse::{Event, Sse};
-use std::convert::Infallible;
-use futures::stream::Stream;
 use async_stream::stream;
-use dotenvy::dotenv;
-use serde::{Serialize, Deserialize};
-use std::env;
-use std::sync::Arc;
-use flate2::write::GzEncoder;
-use flate2::Compression;
-use std::io::{BufReader as StdBufReader, BufWriter as StdBufWriter, Write};
 use axum::{
-    routing::post,
-    routing::get,
-    Router,
-    Json,
     extract::State,
     http::StatusCode,
+    routing::{get, post},
+    Json, Router,
 };
 
+use axum::response::sse::{Event, Sse};
+use futures::stream::Stream;
+use dotenvy::dotenv;
+use flate2::{write::GzEncoder, Compression};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
+use std::{
+    borrow::Cow,
+    convert::Infallible,
+    env,
+    io::{BufReader as StdBufReader, Write},
+};
+use tokio::{
+    fs::OpenOptions,
+    io::{AsyncWriteExt, BufWriter},
+    net::TcpListener, 
+    sync::broadcast,
+};
+
+use yup_oauth2::{read_service_account_key, ServiceAccountAuthenticator};
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct BrokerMessage {
-    pub topic: String,
+pub struct BrokerMessage<'a> {
+    pub topic: Cow<'a, str>,
     pub timestamp: u64,
-    pub payload: serde_json::Value,
+    pub payload: Box<RawValue>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct IngestPayload {
-    pub logs: Vec<serde_json::Value>, // The array of logs from mobile
+    pub logs: Vec<Box<RawValue>>, // The array of logs from mobile
 }
 
 //Box acts essentially as a pointer but without the need to manually dereference
@@ -62,8 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //tx is transmitter
     //rx is reciever
     // (Optimized to use Arc<String> to prevent cloning strings for every connected user)
-    let (tx, _rx) = broadcast::channel::<Arc<String>>(10_000);
-    
+    let (tx, _rx) = broadcast::channel::<bytes::Bytes>(10_000);    
     let mut disk_rx = tx.subscribe();
 
     // OPTIMIZATION: Build the Reqwest client once to reuse the connection pool and TLS certificates
@@ -100,60 +103,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         //wait for messages
         loop {
             match disk_rx.recv().await {
-                Ok(json_str) => {
-                    let bytes = json_str.as_bytes();
+                Ok(bytes) => { // Fixed syntax error
+                    // Removed: let bytes = json_str.as_bytes();
 
-                    // FIX: Ensure size tracker ONLY increments if writes actually succeed
+                    // Ensure size tracker ONLY increments if writes actually succeed
                     if let Some(writer) = writer_opt.as_mut() {
-                        //write to memory buffer
-                        if let Err(e) = writer.write_all(bytes).await {
+                        // Pass &bytes slice directly
+                        if let Err(e) = writer.write_all(&bytes).await {
                             eprintln!("Disk failed to write: {}", e);
                             continue;
                         }
-                        //write data (newline)
+                        // Write newline separator
                         if let Err(e) = writer.write_all(b"\n").await {
                             eprintln!("Disk failed to write newline: {}", e);
                             continue;
                         }
                         
-                        // Track written size in RAM instead of hitting disk metadata on every iteration
+                        // Track written size in RAM
                         current_file_size += bytes.len() + 1;
                     } else {
-                        // If writer is missing, safely skip to next iteration
                         continue; 
                     }
 
-                    //file rotation (10MB threshold)
+                    // File rotation (10MB threshold)
                     if current_file_size >= 10 * 1024 * 1024 {
                         println!("Log reached threshold. rotating and uploading...");
 
-                        // 1. SAFELY CLOSE FILE: Extract writer, flush memory to disk, and drop file handle.
-                        // Without this, Windows/OS will block the rename process because the file is in use.
                         if let Some(mut old_writer) = writer_opt.take() {
-                            let _ = old_writer.flush().await; // Flush remaining memory bytes
+                            let _ = old_writer.flush().await;
                             let old_file = old_writer.into_inner();
-                            drop(old_file); // Explicitly release the OS file lock
+                            drop(old_file);
                         }
 
-                        //get time since Unix epoch to get unique file name for every file
                         let timestamp = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or(std::time::Duration::ZERO)
                             .as_secs();
 
-                        //creates new names in order to store unique values in cloud
-                        //name of file to compress
                         let archive_name = format!("logs/archive_{}.log", timestamp);
-                        //name of file to upload
                         let cloud_name = format!("segment_{}.log.gz", timestamp);
 
-                        //renames files (Now safe across all Operating Systems)
                         if let Err(e) = tokio::fs::rename("logs/hot_tier.log", &archive_name).await {
                             eprintln!("Failed to rotate log: {}", e);
                             continue;
                         }
 
-                        //Opens new file to write
                         let new_file = OpenOptions::new()
                             .create(true)
                             .append(true)
@@ -161,22 +155,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             .await
                             .expect("Failed to create fresh hot_tier.log");
 
-                        // Reattach the new file to the writer
                         writer_opt = Some(BufWriter::new(new_file));
                         current_file_size = 0;
 
-                        // Clone environment states to move into the async block
                         let upload_bucket = bucket.clone();
                         let client = reqwest_client.clone();
                         let auth = gcp_auth.clone();
 
-                        //uploads in the background
                         tokio::spawn(async move {
                             println!("Requesting GCP upload token...");
                             let scopes = &["https://www.googleapis.com/auth/devstorage.read_write"];
                             
-                            // FIX: Extract the raw string token here, completely avoiding the need 
-                            // to pass the complex `hyper`-based Authenticator struct into the upload function.
                             let token_str = match auth.token(scopes).await {
                                 Ok(t) => {
                                     match t.token() {
@@ -209,7 +198,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
                     eprintln!("Disk manager fell behind broadcast buffer! Missed {} messages.", missed);
-                    // Continue processing subsequent messages
                     continue;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -217,7 +205,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     if let Some(mut writer) = writer_opt.take() {
                         let _ = writer.flush().await;
                     }
-                    // Break out of the infinite loop cleanly
                     break;
                 }
             }
@@ -271,7 +258,7 @@ async fn compress_and_upload_log(
         
         //create new file to store compressed data whose path is the new .gz file name we created
         let compressed_file = std::fs::File::create(output_path)?;
-        let writer = StdBufWriter::new(compressed_file);
+        let writer = GzEncoder::new(compressed_file, Compression::default());
         
         let mut encoder = GzEncoder::new(writer, Compression::default());
 
@@ -289,8 +276,10 @@ async fn compress_and_upload_log(
 
     //Upload compressed file to google cloud bucket
     println!("Uploading {} to Google Cloud...", compressed_filename);
-    let file_bytes = tokio::fs::read(&compressed_filename).await?;
-    
+    let file = tokio::fs::File::open(&compressed_filename).await?;
+    let stream = tokio_util::codec::FramedRead::new(file, tokio_util::codec::BytesCodec::new());
+    let body = reqwest::Body::wrap_stream(stream);
+        
     let url = format!(
         "https://storage.googleapis.com/upload/storage/v1/b/{}/o?uploadType=media&name={}",
         bucket_name, object_name
@@ -300,7 +289,7 @@ async fn compress_and_upload_log(
         .post(&url)
         .bearer_auth(token_str)
         .header("Content-Type", "application/gzip")
-        .body(file_bytes)
+        .body(body)
         .send()
         .await?;
 
@@ -322,7 +311,7 @@ async fn compress_and_upload_log(
 //http handler
 //automatically unpacks the JSON array from the React Native app
 async fn ingest_handler(
-    State(tx): State<broadcast::Sender<Arc<String>>>, 
+    State(tx): State<broadcast::Sender<bytes::Bytes>>, 
     Json(payload): Json<IngestPayload>
 ) -> StatusCode {
     let timestamp = std::time::SystemTime::now()
@@ -330,50 +319,42 @@ async fn ingest_handler(
         .unwrap_or(std::time::Duration::ZERO)
         .as_secs();
 
-    //loop through the batched logs and forward them to existing disk writer
     for event in payload.logs {
-        //convert tiny mobile data into string for storage & structures log payload for readability for later access
         let broker_msg = BrokerMessage {
-            topic: "mobile_telemetry".to_string(),
+            topic: Cow::Borrowed("mobile_telemetry"),
             timestamp,
             payload: event,
         };
         
-        // Serialize ONCE to string and wrap in Arc so we aren't cloning it repeatedly
         if let Ok(json_str) = serde_json::to_string(&broker_msg) {
-            //send to original broadcast signal
-            let _ = tx.send(Arc::new(json_str));
+            // Convert String straight into reference-counted Bytes
+            let _ = tx.send(bytes::Bytes::from(json_str));
         }
     }
 
-    //Return an HTTP 200 OK so the app knows it's safe to delete its local buffer
     StatusCode::OK
 }
 
 //handler creates a persistent HTTP stream for consumer dashboard
 async fn consumer_handler(
-    State(tx): State<broadcast::Sender<Arc<String>>>
+    State(tx): State<broadcast::Sender<bytes::Bytes>>
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    println!("New consumer connected to live stream");
     let mut rx = tx.subscribe();
 
-    //create an async stream that yields data whenever a new log arrives
     let sse_stream = stream! {
         loop {
             match rx.recv().await {
-                Ok(json_str) => {
-                    // Borrows string directly from inside the Arc without allocations
-                    yield Ok(Event::default().data(&*json_str));
-
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                    eprintln!("Consumer lagged, missed {} message", missed);
+                Ok(bytes) => {
+                    // Convert the shared Bytes into a string slice cheaply
+                    // Event::default().data() will format the SSE without a giant intermediate buffer
+                    if let Ok(json_str) = std::str::from_utf8(&bytes) {
+                        yield Ok::<_, Infallible>(Event::default().data(json_str));
+                    }
                 }
                 Err(_) => break,
             }
         }
     };
 
-    //return the stream, telling axum to keep the HTTP connection alive
     Sse::new(sse_stream).keep_alive(axum::response::sse::KeepAlive::default())
 }
