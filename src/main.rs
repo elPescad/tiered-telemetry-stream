@@ -362,8 +362,9 @@ async fn consumer_handler(
         loop {
             match rx.recv().await {
                 Ok(json_str) => {
-                    //Push the pre-converted string to HTTP client without needing to re-serialize
-                    yield Ok(Event::default().data(json_str.to_string()));
+                    // Borrows string directly from inside the Arc without allocations
+                    yield Ok(Event::default().data(&*json_str));
+
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
                     eprintln!("Consumer lagged, missed {} message", missed);
