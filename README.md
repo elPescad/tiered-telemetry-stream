@@ -90,8 +90,8 @@ To support this throughput without causing mobile device battery or thread degra
     { "e": "a", "id": "connect_button_click" }
   ]
 }
+```
 * **Response:** `200 OK`
-
 ### 2. Stream Real-Time Events
 * **Endpoint:** `GET /stream`
 * **Content-Type:** `text/event-stream`
