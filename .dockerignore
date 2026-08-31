@@ -2,4 +2,7 @@ target
 **/target
 logs
 *.json
+.env
 .git
+Dockerfile
+docker-compose.yml

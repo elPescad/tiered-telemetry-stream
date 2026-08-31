@@ -1,6 +1,5 @@
 # --- Rust/Cargo Build Artifacts ---
 /target
-Cargo.lock
 
 # --- OS & IDE Specifics ---
 .DS_Store
@@ -8,9 +7,8 @@ Cargo.lock
 .idea/
 *.rs.bk
 
-# --- CRITICAL: Cloud Security & Secrets ---
-# This ensures you NEVER accidentally push your Google Cloud keys to GitHub!
+# --- Security & Secrets ---
 *.json
-credentials.json
 .env
-.secret*
+credentials.json
+logs/
