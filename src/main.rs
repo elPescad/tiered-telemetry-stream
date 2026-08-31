@@ -1,7 +1,8 @@
 use async_stream::stream;
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
@@ -311,8 +312,21 @@ async fn compress_and_upload_log(
 
 async fn ingest_handler(
     State(tx): State<broadcast::Sender<bytes::Bytes>>,
+    headers: HeaderMap, // <-- Extract headers from request
     Json(payload): Json<IngestPayload>,
-) -> StatusCode {
+) -> impl IntoResponse { // <-- Changed return type
+    
+    // 1. API Key Security Check
+    let expected_key = env::var("API_SECRET_KEY").unwrap_or_else(|_| "fallback-dev-key".to_string());
+    let provided_key = headers.get("X-API-Key")
+        .and_then(|k| k.to_str().ok())
+        .unwrap_or("");
+
+    if provided_key != expected_key {
+        return (StatusCode::FORBIDDEN, "Forbidden: Invalid API Key").into_response();
+    }
+
+    // 2. Process Payload
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or(std::time::Duration::ZERO)
@@ -330,14 +344,25 @@ async fn ingest_handler(
         }
     }
 
-    StatusCode::OK
+    StatusCode::OK.into_response()
 }
 
 async fn consumer_handler(
     State(tx): State<broadcast::Sender<bytes::Bytes>>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let mut rx = tx.subscribe();
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // 1. API Key Security Check
+    let expected_key = env::var("API_SECRET_KEY").unwrap_or_else(|_| "fallback-dev-key".to_string());
+    let provided_key = headers.get("X-API-Key")
+        .and_then(|k| k.to_str().ok())
+        .unwrap_or("");
 
+    if provided_key != expected_key {
+        return (StatusCode::FORBIDDEN, "Forbidden: Invalid API Key").into_response();
+    }
+
+    // 2. Start SSE Stream
+    let mut rx = tx.subscribe();
     let sse_stream = stream! {
         loop {
             match rx.recv().await {
@@ -351,5 +376,7 @@ async fn consumer_handler(
         }
     };
 
-    Sse::new(sse_stream).keep_alive(axum::response::sse::KeepAlive::default())
+    Sse::new(sse_stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }
