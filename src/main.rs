@@ -104,9 +104,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut current_file_size = file.metadata().await.map(|m| m.len() as usize).unwrap_or(0);
         let mut writer_opt = Some(BufWriter::new(file));
 
+        let mut last_rotation = std::time::Instant::now();
+        const SEVEN_DAYS: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
         loop {
-            match disk_rx.recv().await {
-                Ok(bytes) => {
+            // Unblocks every 1 hour to evaluate timer during inactive/low-traffic periods
+            let recv_result = tokio::time::timeout(
+                std::time::Duration::from_secs(3600),
+                disk_rx.recv()
+            ).await;
+
+            match recv_result {
+                Ok(Ok(bytes)) => {
                     if let Some(writer) = writer_opt.as_mut() {
                         if let Err(e) = writer.write_all(&bytes).await {
                             eprintln!("Disk failed to write: {}", e);
@@ -121,94 +130,103 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     } else {
                         continue;
                     }
-
-                    // File rotation threshold (10MB)
-                    if current_file_size >= 10 * 1024 * 1024 {
-                        println!("Log reached threshold. Rotating and uploading...");
-
-                        if let Some(mut old_writer) = writer_opt.take() {
-                            let _ = old_writer.flush().await;
-                            let old_file = old_writer.into_inner();
-                            drop(old_file);
-                        }
-
-                        let timestamp = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or(std::time::Duration::ZERO)
-                            .as_secs();
-
-                        let archive_name = format!("logs/archive_{}.log", timestamp);
-                        let cloud_name = format!("segment_{}.log.gz", timestamp);
-
-                        if let Err(e) = tokio::fs::rename("logs/hot_tier.log", &archive_name).await {
-                            eprintln!("Failed to rotate log: {}", e);
-                            continue;
-                        }
-
-                        let new_file = OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("logs/hot_tier.log")
-                            .await
-                            .expect("Failed to create fresh hot_tier.log");
-
-                        writer_opt = Some(BufWriter::new(new_file));
-                        current_file_size = 0;
-
-                        let upload_bucket = bucket.clone();
-                        let client = reqwest_client.clone();
-                        let auth = gcp_auth.clone();
-
-                        tokio::spawn(async move {
-                            println!("Requesting GCP upload token...");
-                            let scopes = &["https://www.googleapis.com/auth/devstorage.read_write"];
-
-                            let token_str = match auth.token(scopes).await {
-                                Ok(t) => match t.token() {
-                                    Some(tok) => tok.to_string(),
-                                    None => {
-                                        eprintln!("Upload failed for {}: missing token string.", cloud_name);
-                                        let _ = tokio::fs::remove_file(&archive_name).await;
-                                        return;
-                                    }
-                                },
-                                Err(e) => {
-                                    eprintln!("Upload failed for {}: auth error: {}.", cloud_name, e);
-                                    let _ = tokio::fs::remove_file(&archive_name).await;
-                                    return;
-                                }
-                            };
-
-                            match compress_and_upload_log(
-                                archive_name.clone(),
-                                upload_bucket,
-                                cloud_name.clone(),
-                                client,
-                                token_str,
-                            )
-                            .await
-                            {
-                                Ok(_) => println!("Segment {} securely stored in cloud", cloud_name),
-                                Err(e) => {
-                                    eprintln!("Upload failed for segment {}: {}.", cloud_name, e);
-                                    let _ = tokio::fs::remove_file(&archive_name).await;
-                                    let _ = tokio::fs::remove_file(&format!("{}.gz", archive_name)).await;
-                                }
-                            }
-                        });
-                    }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(missed))) => {
                     eprintln!("Disk manager fell behind broadcast buffer! Missed {} messages.", missed);
                     continue;
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
                     println!("Flushing remaining logs and shutting down disk manager...");
                     if let Some(mut writer) = writer_opt.take() {
                         let _ = writer.flush().await;
                     }
                     break;
                 }
+                Err(_timeout) => {
+                    // Hourly timeout hit — loop advances to age check
+                }
+            }
+
+            // File rotation threshold check (10 MB size OR 7 days elapsed with non-empty log)
+            let size_threshold = current_file_size >= 10 * 1024 * 1024;
+            let time_threshold = last_rotation.elapsed() >= SEVEN_DAYS && current_file_size > 0;
+
+            if size_threshold || time_threshold {
+                let reason = if size_threshold { "10MB threshold" } else { "7-day age threshold" };
+                println!("Log reached {}. Rotating and uploading...", reason);
+
+                last_rotation = std::time::Instant::now();
+
+                if let Some(mut old_writer) = writer_opt.take() {
+                    let _ = old_writer.flush().await;
+                    let old_file = old_writer.into_inner();
+                    drop(old_file);
+                }
+
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or(std::time::Duration::ZERO)
+                    .as_secs();
+
+                let archive_name = format!("logs/archive_{}.log", timestamp);
+                let cloud_name = format!("segment_{}.log.gz", timestamp);
+
+                if let Err(e) = tokio::fs::rename("logs/hot_tier.log", &archive_name).await {
+                    eprintln!("Failed to rotate log: {}", e);
+                    continue;
+                }
+
+                let new_file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("logs/hot_tier.log")
+                    .await
+                    .expect("Failed to create fresh hot_tier.log");
+
+                writer_opt = Some(BufWriter::new(new_file));
+                current_file_size = 0;
+
+                let upload_bucket = bucket.clone();
+                let client = reqwest_client.clone();
+                let auth = gcp_auth.clone();
+
+                tokio::spawn(async move {
+                    println!("Requesting GCP upload token...");
+                    let scopes = &["https://www.googleapis.com/auth/devstorage.read_write"];
+
+                    let token_str = match auth.token(scopes).await {
+                        Ok(t) => match t.token() {
+                            Some(tok) => tok.to_string(),
+                            None => {
+                                eprintln!("Upload failed for {}: missing token string.", cloud_name);
+                                let _ = tokio::fs::remove_file(&archive_name).await;
+                                return;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Upload failed for {}: auth error: {}.", cloud_name, e);
+                            let _ = tokio::fs::remove_file(&archive_name).await;
+                            return;
+                        }
+                    };
+
+                    match compress_and_upload_log(
+                        archive_name.clone(),
+                        upload_bucket,
+                        cloud_name.clone(),
+                        client,
+                        token_str,
+                    )
+                    .await
+                    {
+                        Ok(_) => println!("Segment {} securely stored in cloud", cloud_name),
+                        Err(e) => {
+                            eprintln!("Upload failed for segment {}: {}.", cloud_name, e);
+                            let _ = tokio::fs::remove_file(&archive_name).await;
+                            let _ = tokio::fs::remove_file(&format!("{}.gz", archive_name)).await;
+                        }
+                    }
+                });
             }
         }
     });
