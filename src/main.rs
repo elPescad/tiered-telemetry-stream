@@ -1,20 +1,22 @@
 // Describe what the Stack is and what the Heap is? Which is faster for memory operations? 2pts
 // Answer in the form of a comment:
 /*
- *
+ * the stack is where the currently required information goes for operations (it's small but really fast).
+ * the heap, however, is more like a storage container for not-so-immediate info and is much slower.
+ * for this reason the stack is faster for memory operations.
  */
 
 // What is a thread? Answer can be metaphorical, literal, or descriptive. 1pt
 // Answer in the form of a comment:
 /*
- *
+ * threads are essentially pieces of cores provisioned by the os to allow concurrent and async operations. 
  */
 
 // What is a green thread? Answer can be metaphorical, literal, or descriptive. 1pt.
 // Hint: The operating system has no idea it exists.
 // Answer in the form of a comment:
 /*
- *
+ * not really sure? im assuming they're "fake" threads that are created by async runtimes for dynamic management of async between program threads
  */
 use tokio::net::TcpListener;
 use tokio::fs::OpenOptions;
@@ -83,7 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
  
     // Answer in the form of a comment: 
     /*
-     *
+     * its a very large heap and the conversions between types require extra time which can make them expensive
+     * and inefficient (plus potentially laggy), especially when large amounts of requests are sent all at once
      */
     let (tx, _rx) = broadcast::channel::<Message>(10_000);
     
@@ -127,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                     //Answer in the form of a comment: 
                     /*
-                     *
+                     * roughly 10MB
                      */
                     if current_file_size >= 10 * 1024 * 1024 {
                         println!("Log reached threshold. rotating and uploading...");
@@ -150,7 +153,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                         // Answer in the form of a comment:
                         /*
-                         *
+                         * since its only second precision, id assume a race condition may occur when under heavy load.
+                         * the program would name two files the same thing if they both were filled up within the same second, 
+                         * which would destroy the first log file that was created
                          */
                         let timestamp = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
