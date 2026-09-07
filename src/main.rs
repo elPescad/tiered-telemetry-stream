@@ -1,3 +1,21 @@
+// Describe to me what is the Stack and what is the Heap? Which is faster for memory operations? 2pts
+// Answer in the form of a comment:
+/*
+ *
+ */
+
+// What is a thread? Answer can be metaphorical, literal, or descriptive. 1pt
+// Answer in the form of a comment:
+/*
+ *
+ */
+
+// What is a green thread? Answer can be metaphorical, literal, or descriptive. 1pt.
+// Hint: The operating system has no idea it exists.
+// Answer in the form of a comment:
+/*
+ *
+ */
 use tokio::net::TcpListener;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
@@ -45,6 +63,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     println!("Starting cloud tiered broker...");
 
+    // The line below is one of the worst things in this code base for effeciency. can you explain why? 5pts
+ 
+    /* CONTEXT: In this specific line tx is a sender and rx is a reciever. tx gets the messages from the sockets 
+     * which you can think of a socket as a virtual cable, and sends them to one of many recievers.
+     * To further elaborate on sockets quickly. Say someone wants to send you mail. so they put your address
+     * on the envelope and then put it in their specific mailbox to be sent out. It is then transported to your mailbox.
+     * You can then send mail back to this person via your very same mailbox and they can recieve mail via their same mailbox
+     * that is the most basic concept of a socket.
+     *  
+     * Think of message as a struct or a container in simplier terms, currently it stores a Json however
+     * think of it as simply a raw string. We will use "HelloWorld" as the message that rx is recieving.
+     * This message will then be transmitted and converted into many different form across multiple green threads and thread.
+     * the tx and rx are stored on the stack however the Messages typically stored on the stack by default
+     * are stored on the heap now due to broadcast::channel being a container. Containers and their contents
+     * are stored in the heap.
+     * The heap is allocated for 10k Messages
+     */
+ 
+    // Answer in the form of a comment: 
+    /*
+     *
+     */
     let (tx, _rx) = broadcast::channel::<Message>(10_000);
     
     let mut disk_rx = tx.subscribe();
@@ -77,11 +117,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     
                     current_file_size += data.len() + 1;
 
+                    // How many Megabytes (MB) is this. 1pt.
+                    
+                    /* CONTEXT: In this program we store messages in a file, again we can think
+                     * of those messages as a simple "HelloWorld," once we 10 * 1024 * 1024
+                     * bytes of "HelloWorld" we save the file and rotate. This question is
+                     * simply asking how many MB this is
+                    */
+
+                    //Answer in the form of a comment: 
+                    /*
+                     *
+                     */
                     if current_file_size >= 10 * 1024 * 1024 {
                         println!("Log reached threshold. rotating and uploading...");
 
                         let _ = writer.flush().await;
 
+                        // This is a potential race condition. In what scenario could it be triggered. 3pts
+
+                        /* CONTEXT: variable is simply the timestamp used to name the current file
+                         * once it reaches 10 * 1024 * 1024 bytes. Once it reaches the byte limit
+                         * the file is renamed based on the timestamp variable. An example would
+                         * hot_tier.log would be renamed hot_tier100.log. The number 100 represents the time
+                         * in second. So then every file should be unique since each file is represented in seconds
+                         * only except for in a specific scenario. We use the UNIX epoch to represent seconds
+                         * since January 1st 1970 which was when the UNIX operating system was invented.
+                         * So each second will be unique. I want you to test something before you answer
+                         * in a linux terminal type this command: date +%s. See the result will be some big number
+                         * Wait 5 seconds then type it again. Use this to answer the question.
+                         */
+
+                        // Answer in the form of a comment:
+                        /*
+                         *
+                         */
                         let timestamp = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap()
