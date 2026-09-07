@@ -1,4 +1,4 @@
-// Describe to me what is the Stack and what is the Heap? Which is faster for memory operations? 2pts
+// Describe what the Stack is and what the Heap is? Which is faster for memory operations? 2pts
 // Answer in the form of a comment:
 /*
  *
@@ -117,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     
                     current_file_size += data.len() + 1;
 
-                    // How many Megabytes (MB) is this. 1pt.
+                    // How many Megabytes (MB) is this. Approximation is fine. 1pt.
                     
                     /* CONTEXT: In this program we store messages in a file, again we can think
                      * of those messages as a simple "HelloWorld," once we 10 * 1024 * 1024
@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                          * hot_tier.log would be renamed hot_tier100.log. The number 100 represents the time
                          * in second. So then every file should be unique since each file is represented in seconds
                          * only except for in a specific scenario. We use the UNIX epoch to represent seconds
-                         * since January 1st 1970 which was when the UNIX operating system was invented.
+                         * since January 1st 1970 which was around when the UNIX operating system was invented.
                          * So each second will be unique. I want you to test something before you answer
                          * in a linux terminal type this command: date +%s. See the result will be some big number
                          * Wait 5 seconds then type it again. Use this to answer the question.
