@@ -106,8 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut writer_opt = Some(BufWriter::new(file));
 
         let mut last_rotation = std::time::Instant::now();
-        const SEVEN_DAYS: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
-
+        const ONE_DAY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
         loop {
             // Unblocks every 1 hour to evaluate timer during inactive/low-traffic periods
             let recv_result = tokio::time::timeout(
@@ -150,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             // File rotation threshold check (10 MB size OR 7 days elapsed with non-empty log)
             let size_threshold = current_file_size >= 10 * 1024 * 1024;
-            let time_threshold = last_rotation.elapsed() >= SEVEN_DAYS && current_file_size > 0;
+            let time_threshold = last_rotation.elapsed() >= ONE_DAY && current_file_size > 0;
 
             if size_threshold || time_threshold {
                 let reason = if size_threshold { "10MB threshold" } else { "7-day age threshold" };
