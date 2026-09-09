@@ -6,11 +6,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-
 use axum::response::sse::{Event, Sse};
 use dotenvy::dotenv;
 use flate2::{write::GzEncoder, Compression};
-use futures::stream::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -34,7 +32,7 @@ use yup_oauth2::{
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BrokerMessage<'a> {
     pub topic: Cow<'a, str>,
-    pub timestamp: u64,
+    pub timestamp: u128,
     pub payload: Box<RawValue>,
 }
 
@@ -147,12 +145,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             }
 
-            // File rotation threshold check (10 MB size OR 7 days elapsed with non-empty log)
+            // File rotation threshold check (10 MB size OR 1 day elapsed with non-empty log)
             let size_threshold = current_file_size >= 10 * 1024 * 1024;
             let time_threshold = last_rotation.elapsed() >= ONE_DAY && current_file_size > 0;
 
             if size_threshold || time_threshold {
-                let reason = if size_threshold { "10MB threshold" } else { "7-day age threshold" };
+                let reason = if size_threshold { "10MB threshold" } else { "1-day age threshold" };
                 println!("Log reached {}. Rotating and uploading...", reason);
 
                 last_rotation = std::time::Instant::now();
@@ -166,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or(std::time::Duration::ZERO)
-                    .as_secs();
+                    .as_millis();
 
                 let archive_name = format!("logs/archive_{}.log", timestamp);
                 let cloud_name = format!("segment_{}.log.gz", timestamp);
@@ -329,7 +327,7 @@ async fn ingest_handler(
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or(std::time::Duration::ZERO)
-        .as_secs();
+        .as_millis();
 
     for event in payload.logs {
         let broker_msg = BrokerMessage {
