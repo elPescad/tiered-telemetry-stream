@@ -208,22 +208,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     };
 
-                    match compress_and_upload_log(
-                        archive_name.clone(),
-                        upload_bucket,
-                        cloud_name.clone(),
-                        client,
-                        token_str,
-                    )
-                    .await
-                    {
-                        Ok(_) => println!("Segment {} securely stored in cloud", cloud_name),
-                        Err(e) => {
-                            eprintln!("Upload failed for segment {}: {}.", cloud_name, e);
-                            let _ = tokio::fs::remove_file(&archive_name).await;
-                            let _ = tokio::fs::remove_file(&format!("{}.gz", archive_name)).await;
+                    tokio::spawn(async move {
+                        match compress_and_upload_log(
+                            archive_name.clone(),
+                            upload_bucket,
+                            cloud_name.clone(),
+                            client,
+                            token_str,
+                        )
+                        .await
+                        {
+                            Ok(_) => println!("Segment {} securely stored in cloud", cloud_name),
+                            Err(e) => {
+                                eprintln!("Upload failed for segment {}: {}.", cloud_name, e);
+                                let _ = tokio::fs::remove_file(&archive_name).await;
+                                let _ = tokio::fs::remove_file(&format!("{}.gz", archive_name)).await;
+                            }
                         }
-                    }
+                    });
                 });
             }
         }
