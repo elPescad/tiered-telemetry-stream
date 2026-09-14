@@ -15,3 +15,5 @@ yup-oauth2 = "12.1.2"
 reqwest = { version = "0.13.5", features = [ "stream" ] }
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1.12.1"
+log = "0.4.34"
+chrono = "0.4.45"
