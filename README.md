@@ -14,7 +14,7 @@ The system utilizes a decoupled producer-consumer architecture powered by a thre
 > 1. **Client Device** $\rightarrow$ `POST /ingest` (Batched JSON + API Key Header)
 > 2. **Axum Handlers** $\rightarrow$ Authenticates request & broadcasts wrapped envelope to Tokio channel
 > 3. **Disk Manager Task** $\rightarrow$ Appends payload to `logs/hot_tier.log`
-> 4. **Rotation Manager** $\rightarrow$ Triggers at **10 MB** or **7 Days** of age
+> 4. **Rotation Manager** $\rightarrow$ Triggers at **10 MB** or **1 Day** of age
 > 5. **Blocking Compression Sandbox** $\rightarrow$ Compresses log to `.gz` format (`flate2`)
 > 6. **GCP Storage Task** $\rightarrow$ Streams compressed archive (`segment_<timestamp>.log.gz`) to GCS & purges local copy
 
@@ -23,7 +23,7 @@ The system utilizes a decoupled producer-consumer architecture powered by a thre
 ## Key Technical Enhancements in Code
 
 * **Header-Based Authentication:** All routes (`/ingest` and `/stream`) require header verification (`X-API-Key`) against the configured secret.
-* **Dual-Trigger File Rotation:** Rotates the hot tier file when it reaches **10 MB** in size **OR** after **7 days** of inactivity/age.
+* **Dual-Trigger File Rotation:** Rotates the hot tier file when it reaches **10 MB** in size **OR** after **1 day** of inactivity/age.
 * **Smart GCP Auth Discovery:** Uses `yup-oauth2` Application Default Credentials (ADC) to automatically toggle between a local Service Account JSON file (`GOOGLE_APPLICATION_CREDENTIALS`) and GCE/GKE VM Instance Metadata servers.
 * **High-Capacity Broadcast Channel:** Handles up to **10,000** buffered in-memory messages before lagging receivers drop frames.
 * **Zero-Downtime Purging:** Rotated log files (`archive_<timestamp>.log`) and compressed segments are deleted from local disk only after receiving a confirmed successful status from GCS.

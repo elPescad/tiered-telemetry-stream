@@ -7,12 +7,13 @@ edition = "2024"
 async-stream = "0.3.6"
 axum = "0.8.9"
 dotenvy = "0.15.7"
-flate2 = "1.1.9"
-futures = "0.3.32"
-serde = { version = "1.0.228", features = ["derive"], }
+flate2 = "1.1.10"
+serde = { version = "1.0.229", features = ["derive"], }
 serde_json = { version = "1.0", features = ["raw_value"] }
-tokio = { version = "1.38", features = ["full"] }
+tokio = { version = "1.53.1", features = [ "full" ] }
 yup-oauth2 = "12.1.2"
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.13.5", features = [ "stream" ] }
 tokio-util = { version = "0.7", features = ["codec"] }
-bytes = "1.5"
+bytes = "1.12.1"
+log = "0.4.34"
+chrono = "0.4.45"
