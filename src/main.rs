@@ -180,8 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                 if let Some(mut old_writer) = writer_opt.take() {
                     let _ = old_writer.flush().await;
-                    let old_file = old_writer.into_inner();
-                    drop(old_file);
+                    drop(old_writer);
                 }
 
                 let timestamp = std::time::SystemTime::now()
@@ -231,7 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     };
 
-                    tokio::spawn(async move {
+                    if token_str != "" {
                         match compress_and_upload_log(
                             archive_name.clone(),
                             upload_bucket,
@@ -248,8 +247,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 let _ = tokio::fs::remove_file(&format!("{}.gz", archive_name)).await;
                             }
                         }
-                    });
+                    }
                 });
+                continue;
             }
         }
     });
